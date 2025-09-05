@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Mapa con Overlay NDVI</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css"/>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.css" />
+<style>
+html, body, #map { height: 100%; margin: 0; padding: 0; }
+#ndviCanvas, #rgbCanvas { display: none; }
+
+#controls {
+  position: absolute; bottom: 10px; left: 10px; z-index:1000;
+  background: rgba(255,255,255,0.95); padding: 12px; border-radius: 8px; width: 320px;
+  font-family: 'Inter', sans-serif; font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+  display: none;
+  text-align: center;
+}
+#histCanvas { width: 100%; height: 80px; border-radius: 6px; box-shadow: inset 0 0 6px rgba(0,0,0,0.1); display: block; margin-top: 6px; }
+
+.noUi-target { height: 6px; border-radius: 4px; background: #e0e0e0; box-shadow: inset 0 1px 3px rgba(0,0,0,0.2); }
+#slider .noUi-connect { background: #007bff; border-radius: 4px; }
+#slider .noUi-handle { border-radius: 50%; width: 12px; height: 12px; top: -3px; background: #fff; border: 2px solid #007bff; box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer; transition: all 0.2s; }
+#slider .noUi-handle:hover { transform: scale(1.3); box-shadow: 0 3px 6px rgba(0,0,0,0.4); }
+
+.switch { display:flex; align-items:center; margin-top:8px; cursor:pointer; font-weight:500; font-size:13px; justify-content: center;}
+.switch input { display: none; }
+.slider-round { width: 34px; height: 18px; background-color: #ccc; border-radius:18px; position:relative; margin-right:8px; transition:0.3s; }
+.slider-round::before { content:""; position:absolute; width:14px; height:14px; left:2px; top:2px; background-color:white; border-radius:50%; transition:0.3s; }
+.switch input:checked + .slider-round { background-color:#28a745; }
+.switch input:checked + .slider-round::before { transform: translateX(16px); }
+
+.leaflet-control-custom { background-color:#fff; width:36px; height:36px; cursor:pointer; text-align:center; line-height:36px; font-size:18px; border-radius:6px; border:1px solid #ccc; box-shadow:0 2px 4px rgba(0,0,0,0.2); transition:0.2s; }
+.leaflet-control-custom:hover { background-color:#007bff; color:#fff; box-shadow:0 4px 8px rgba(0,0,0,0.3); }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<canvas id="ndviCanvas"></canvas>
+<canvas id="rgbCanvas"></canvas>
+
+<div id="controls">
+  <div style="font-weight:600; margin-bottom:6px;">Histograma de Ecualización</div>
+  <div id="slider" style="width: 260px; margin: 0 auto 4px auto;"></div>
+  <div style="display:flex; justify-content:space-between; font-size:12px; width: 260px; margin: 0 auto 6px auto;">
+    <span>-1</span><span>+1</span>
+  </div>
+  <canvas id="histCanvas"></canvas>
+  <label class="switch">
+    <input type="checkbox" id="transparencyCheckbox">
+    <span class="slider-round"></span> Transparencia Suelo
+  </label>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/noUiSlider/15.7.0/nouislider.min.js"></script>
+<script src="https://unpkg.com/leaflet-side-by-side/leaflet-side-by-side.min.js"></script>
+
+<script>
+const map = L.map('map').setView([23.6345,-102.5528],5);
+const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{attribution:'Tiles © Esri',maxZoom:20});
+const labelsLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',{attribution:'Labels © Esri',maxZoom:20});
+const satelliteWithLabels = L.layerGroup([satelliteLayer, labelsLayer]).addTo(map);
+
+let rgbOverlay, ndviOverlay, bounds;
+const overlays={};
+map.pm.addControls({position:'topleft',drawPolygon:true,editMode:true,removalMode:true});
+
+// Funciones
+function drawRGBA(ctx,matrix){ 
+    const imgData=ctx.createImageData(matrix[0].length,matrix.length); 
+    for(let y=0;y<matrix.length;y++){ 
+        for(let x=0;x<matrix[0].length;x++){ 
+            const idx=(y*matrix[0].length+x)*4; 
+            const pix=matrix[y][x]; 
+            imgData.data[idx]=pix[0]; 
+            imgData.data[idx+1]=pix[1]; 
+            imgData.data[idx+2]=pix[2]; 
+            imgData.data[idx+3]=pix[3];
+        }
+    } 
+    ctx.putImageData(imgData,0,0);
+}
+function drawHistogram(matrix,min,max){ 
+    const canvas=document.getElementById('histCanvas'); 
+    const ctx=canvas.getContext('2d'); 
+    ctx.clearRect(0,0,canvas.width,canvas.height); 
+    const values=[]; 
+    matrix.forEach(row=>row.forEach(v=>{const val=Array.isArray(v)?v[0]/255*2-1:v; values.push(val);})); 
+    const bins=100,step=(max-min)/bins,counts=Array(bins).fill(0); 
+    values.forEach(v=>{const i=Math.floor((v-min)/step); if(i>=0 && i<bins) counts[i]++;}); 
+    const maxCount=Math.max(...counts),barWidth=canvas.width/bins; 
+    const gradient=ctx.createLinearGradient(0,0,0,canvas.height); 
+    gradient.addColorStop(0,"#28D606"); gradient.addColorStop(0.5,"#FFFF00"); gradient.addColorStop(0.75,"#FFA500"); gradient.addColorStop(1,"#FF6347"); 
+    counts.forEach((c,i)=>{ctx.fillStyle=gradient; ctx.fillRect(i*barWidth,canvas.height-(c/maxCount)*canvas.height,barWidth,(c/maxCount)*canvas.height);}); 
+    ctx.strokeStyle="rgba(0,0,0,0.5)"; 
+    ctx.beginPath(); 
+    ctx.moveTo(0,canvas.height); 
+    ctx.lineTo(canvas.width,canvas.height); 
+    ctx.stroke(); 
+    const zeroPos=Math.floor((-min)/(max-min)*canvas.width); 
+    ctx.strokeStyle="rgba(255,0,0,0.7)"; 
+    ctx.beginPath(); 
+    ctx.moveTo(zeroPos,0); 
+    ctx.lineTo(zeroPos,canvas.height); 
+    ctx.stroke();
+}
+
+// Cargar datos
+fetch('/bounds').then(res=>res.json()).then(data=>{
+    bounds=data.bounds;
+
+    fetch('/rgb_data').then(res=>res.json()).then(d=>{
+        const rgb_matrix=d.rgb_matrix;
+        const canvas=document.getElementById('rgbCanvas'); 
+        canvas.width=rgb_matrix[0].length; 
+        canvas.height=rgb_matrix.length;
+        drawRGBA(canvas.getContext('2d'),rgb_matrix);
+        rgbOverlay=L.imageOverlay(canvas.toDataURL(),bounds,{opacity:1}).addTo(map);
+        overlays["RGB"]=rgbOverlay;
+        map.fitBounds(bounds);
+
+        fetch('/ndvi_data').then(res=>res.json()).then(d=>{
+            window.ndvi_matrix=d.ndvi_matrix;
+            const canvas=document.getElementById('ndviCanvas');
+            canvas.width=ndvi_matrix[0].length; 
+            canvas.height=ndvi_matrix.length;
+            drawRGBA(canvas.getContext('2d'),ndvi_matrix);
+            ndviOverlay=L.imageOverlay(canvas.toDataURL(),bounds,{opacity:1});
+            overlays["NDVI"]=ndviOverlay;
+
+            // Control de capas
+            const layersControl=L.control.layers({"Satélite":satelliteWithLabels},overlays,{collapsed:false});
+            const layersControlEl=layersControl.addTo(map).getContainer();
+            layersControlEl.style.display='none';
+            const layersControlIcon=L.control({position:'topright'});
+            layersControlIcon.onAdd=function(){
+                const div=L.DomUtil.create('div','leaflet-bar leaflet-control leaflet-control-custom');
+                div.innerHTML='<i class="fas fa-layer-group"></i>';
+                div.title='Capas';
+                div.onclick=()=>layersControlEl.style.display=layersControlEl.style.display==='none'?'block':'none';
+                return div;
+            };
+            layersControlIcon.addTo(map);
+
+            // Botón Swipe Split
+            const swipeControl = L.control({position: 'topright'});
+            let swipeActive = false;
+            let swipeInstance;
+            swipeControl.onAdd = function() {
+                const div = L.DomUtil.create('div','leaflet-bar leaflet-control leaflet-control-custom');
+                div.innerHTML = '<i class="fas fa-arrows-h"></i>';
+                div.title = 'Comparar RGB / NDVI';
+                div.onclick = function() {
+                    if(!swipeActive){
+                        swipeInstance = L.control.sideBySide(rgbOverlay, ndviOverlay).addTo(map);
+                        swipeActive = true;
+                        div.style.backgroundColor = '#28a745';
+                    } else {
+                        swipeInstance.remove();
+                        swipeActive = false;
+                        div.style.backgroundColor = '#fff';
+                    }
+                }
+                return div;
+            };
+            swipeControl.addTo(map);
+
+            initSlider();
+            map.on('overlayadd', e=>{ if(e.name==="NDVI"){ document.getElementById("controls").style.display="block"; drawHistogram(window.ndvi_matrix,-1,1); }}); 
+            map.on('overlayremove', e=>{ if(e.name==="NDVI"){ document.getElementById("controls").style.display="none"; }});
+        });
+    });
+});
+
+function initSlider(){ 
+    const slider=document.getElementById('slider'); 
+    noUiSlider.create(slider,{start:[-1,1],connect:true,range:{min:-1,max:1},step:0.01}); 
+    slider.noUiSlider.on('update',()=>{
+        if(map.hasLayer(overlays["NDVI"])){
+            drawHistogram(window.ndvi_matrix,...slider.noUiSlider.get().map(v=>parseFloat(v)));
+            drawIndexCurrentSlider();
+        }
+    });
+}
+document.getElementById('transparencyCheckbox').addEventListener('change', drawIndexCurrentSlider);
+
+function drawIndexCurrentSlider(){
+    const slider=document.getElementById('slider'); 
+    const values=slider.noUiSlider.get().map(v=>parseFloat(v));
+    drawIndex(values[0], values[1]);
+}
+
+function drawIndex(minVal,maxVal){
+    const canvas=document.getElementById("ndviCanvas");
+    const ctx=canvas.getContext('2d');
+    let matrix = window.ndvi_matrix;
+    let sueloThreshold=-0.05;
+    if(document.getElementById('transparencyCheckbox').checked){
+        sueloThreshold=calcularPicosYSuelo(matrix)[0];
+    }
+    const filtered=matrix.map(row=>row.map(v=>{
+        let val=Array.isArray(v)?v[0]/255*2-1:v;
+        if(val<minVal||val>maxVal || (document.getElementById('transparencyCheckbox').checked && val<sueloThreshold)) return [0,0,0,0];
+        return v;
+    }));
+    drawRGBA(ctx, filtered);
+    overlays["NDVI"].setUrl(canvas.toDataURL());
+}
+
+function calcularPicosYSuelo(matrix){ 
+    const values=[]; 
+    matrix.forEach(row=>row.forEach(v=>{const val=Array.isArray(v)?v[0]/255*2-1:v; values.push(val);})); 
+    const bins=200,min=-1,max=1,step=(max-min)/bins,counts=Array(bins).fill(0); 
+    values.forEach(v=>{const i=Math.floor((v-min)/step); if(i>=0&&i<bins) counts[i]++;}); 
+    const sortedIndices=counts.map((c,i)=>[c,i]).sort((a,b)=>b[0]-a[0]); 
+    const peak1=min+sortedIndices[0][1]*step+step/2, peak2=min+sortedIndices[1][1]*step+step/2; 
+    return [Math.min(peak1,peak2),Math.max(peak1,peak2)];
+}
+</script>
+</body>
+</html>
