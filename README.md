@@ -14,15 +14,20 @@ Slider dinámico para filtrar rangos de NDVI.
 Botón de transparencia de suelo automático.
 Funcionalidad de recorte por polígono en el mapa (con Leaflet-Geoman).
 Compatible con ortomosaicos provenientes de drones.
-📂 Proyecto_NDVI
+
+## 📂 Estructura del Proyecto
+
+```plaintext
+Proyecto_NDVI/
 ├── app.py                # Backend Flask (API para RGB, NDVI y recortes)
 ├── index.html            # Interfaz web (Leaflet, controles, visualización de NDVI)
 ├── requirements.txt      # Dependencias del proyecto
 ├── Or.tif                # Ortofoto de entrada (GeoTIFF)
 ├── static/               # Carpeta para overlays y recortes generados
-│   ├── overlay.png       # Imagen overlay (NDVI o RGB procesado)
+│   ├── overlay.png        # Imagen overlay (NDVI o RGB procesado)
 │   ├── bounds_overlay.txt # Límites geográficos del overlay
 │   └── recorte_overlay.png # Recorte generado dinámicamente
+o dinámicamente
 
 
 yaml Copiar Editar
